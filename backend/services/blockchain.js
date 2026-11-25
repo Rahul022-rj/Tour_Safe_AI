@@ -173,7 +173,7 @@ async function getChainStatus() {
       chainId: actualChainId,
       blockNumber,
       rpcUrl: config.chainRpcUrl.replace(/\/\/[^@/]*@/, '//***@'), // hide credentials embedded in RPC URLs
-      signer: config.privateKey ? 'wallet (PRIVATE_KEY)' : 'hardhat unlocked account #0 (dev only)',
+      signer: config.privateKey ? 'wallet (PRIVATE_KEY)' : config.embeddedChain ? 'embedded demo chain (rebuilt from the database on every restart)' : 'hardhat unlocked account #0 (dev only)',
       persistent: config.chainId !== 31337,
     };
   } catch (err) {

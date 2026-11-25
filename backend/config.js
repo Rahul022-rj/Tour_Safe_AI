@@ -27,12 +27,18 @@ const config = {
   mongoUri: env.MONGODB_URI || env.MONGO_URI || 'mongodb://127.0.0.1:27017/tourist_safety',
   jwtSecret: env.JWT_SECRET || '',
   jwtExpiresIn: env.JWT_EXPIRES_IN || '8h',
-  clientUrl: env.CLIENT_URL || 'http://localhost:5173',
+  // On Render the public URL is provided automatically as RENDER_EXTERNAL_URL
+  clientUrl: (env.CLIENT_URL || env.RENDER_EXTERNAL_URL || 'http://localhost:5173').replace(/\/$/, ''),
   // Extra allowed browser origins (comma separated), e.g. a LAN address used to test on a phone
   extraOrigins: (env.CORS_EXTRA_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
   trustProxy: bool(env.TRUST_PROXY, false), // set to true behind nginx / a load balancer so rate limits see the real IP
   bcryptRounds: num(env.BCRYPT_ROUNDS, 12),
   passwordResetMinutes: num(env.PASSWORD_RESET_MINUTES, 30),
+
+  // ----- Hosting helpers -----
+  autoSetup: bool(env.AUTO_SETUP, false), // run the first-time setup on every start (creates only what is missing)
+  embeddedChain: bool(env.EMBEDDED_CHAIN, false), // start a demo Hardhat chain inside the server (see services/embeddedChain.js)
+  embeddedChainPort: num(env.EMBEDDED_CHAIN_PORT, 8545),
 
   // ----- Blockchain -----
   chainRpcUrl: env.BLOCKCHAIN_RPC_URL || env.CHAIN_RPC_URL || 'http://127.0.0.1:8545',
@@ -90,6 +96,14 @@ const config = {
   externalUserAgent: env.EXTERNAL_USER_AGENT || 'TourSafe-AI/1.0 (tourist safety research project)',
   disableExternalApis: bool(env.DISABLE_EXTERNAL_APIS, false), // tests and offline demos
 };
+
+if (config.embeddedChain) {
+  // The embedded chain is always a local Hardhat chain on 127.0.0.1
+  config.chainRpcUrl = `http://127.0.0.1:${config.embeddedChainPort}`;
+  config.chainId = 31337;
+  config.contractAddress = '';
+  config.privateKey = '';
+}
 
 config.allowedOrigins = [config.clientUrl, ...config.extraOrigins];
 config.emailConfigured = Boolean(config.smtp.host && config.smtp.from);

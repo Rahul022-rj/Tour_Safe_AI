@@ -17,6 +17,7 @@ const { getChainStatus } = require('./services/blockchain');
 const chainProofs = require('./services/chainProofs');
 const anomaly = require('./services/anomaly');
 const safety = require('./services/safety');
+const embeddedChain = require('./services/embeddedChain');
 
 const app = createApp();
 // One HTTP server shared by Express (REST) and Socket.IO (live push)
@@ -40,11 +41,22 @@ connectDB()
     server.listen(config.port, () => {
       console.log(`[server] API running on http://localhost:${config.port} (${config.nodeEnv})`);
       console.log(`[notify] email ${config.emailConfigured ? 'configured' : 'NOT configured'}, sms ${config.smsConfigured ? 'configured' : 'NOT configured'}`);
-      // The API also works without the chain (proofs are queued and retried), so just report it
-      getChainStatus()
-        .then((s) => console.log(`[chain] Contract ${s.address} on chain ${s.chainId}, block ${s.blockNumber} (${s.signer})`))
-        .catch((err) => console.warn(`[chain] WARNING: ${err.message}`));
       chainProofs.startWorker();
+      (async () => {
+        // Hosting without a shell (e.g. Render free plan): create zones / operator automatically if missing
+        if (config.autoSetup) {
+          try {
+            await require('./services/setup').runSetup();
+          } catch (err) {
+            console.error(`[setup] ${err.message}`);
+          }
+        }
+        if (config.embeddedChain) await embeddedChain.start();
+        // The API also works without the chain (proofs are queued and retried), so just report it
+        getChainStatus()
+          .then((s) => console.log(`[chain] Contract ${s.address} on chain ${s.chainId}, block ${s.blockNumber} (${s.signer})`))
+          .catch((err) => console.warn(`[chain] WARNING: ${err.message}`));
+      })();
       anomaly.startSweeper();
       safety.startSweeper();
     });
@@ -61,6 +73,7 @@ function shutdown(signal) {
   chainProofs.stopWorker();
   anomaly.stopSweeper();
   safety.stopSweeper();
+  embeddedChain.stop();
   server.close(() => mongoose.disconnect().finally(() => process.exit(0)));
   setTimeout(() => process.exit(0), 5000).unref();
 }

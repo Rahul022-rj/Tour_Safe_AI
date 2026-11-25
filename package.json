@@ -15,9 +15,13 @@
     "test": "npm run compile --prefix blockchain && npm test --prefix blockchain && npm test --prefix backend && npm test --prefix frontend",
     "build": "npm run build --prefix frontend",
     "start": "npm start --prefix backend",
-    "setup": "npm run setup --prefix backend --"
+    "setup": "npm run setup --prefix backend --",
+    "render-build": "npm ci --include=dev && npm ci --include=dev --prefix backend && npm ci --include=dev --prefix frontend && npm ci --include=dev --prefix blockchain && npm run chain:compile && npm run build"
   },
   "devDependencies": {
     "concurrently": "10.0.6"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -164,7 +164,7 @@ router.get('/system', async (req, res) => {
     environment: config.nodeEnv,
     email: { configured: config.emailConfigured, host: config.smtp.host || null },
     sms: { configured: config.smsConfigured, provider: config.smsConfigured ? 'twilio' : null },
-    blockchain: { ...chainStatus, configuredChainId: config.chainId, requireChainForId: config.requireChainForId, confirmations: config.chainConfirmations },
+    blockchain: { ...chainStatus, configuredChainId: config.chainId, requireChainForId: config.requireChainForId, confirmations: config.chainConfirmations, embedded: config.embeddedChain ? require('../services/embeddedChain').getState() : null },
     routing: { provider: config.osrmUrl, enabled: !config.disableExternalApis },
     geocoding: { provider: config.nominatimUrl, enabled: !config.disableExternalApis },
     places: { providers: config.overpassUrls, enabled: !config.disableExternalApis },
