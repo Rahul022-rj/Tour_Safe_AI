@@ -20,10 +20,11 @@ function NearbyPanel({ position, places, setPlaces }) {
   const [radius, setRadius] = useState(5000);
   const { busy, error, run } = useAsync();
   const [meta, setMeta] = useState(null);
+  // Without a shared location, search around the city centre instead of doing nothing
+  const center = position || HYDERABAD;
   async function search() {
-    if (!position) return;
     try {
-      const data = await run(() => api(`/geo/places${qs({ lat: position[0], lng: position[1], type, radius })}`));
+      const data = await run(() => api(`/geo/places${qs({ lat: center[0], lng: center[1], type, radius })}`));
       setPlaces(data.places);
       setMeta(data);
     } catch {
@@ -32,7 +33,7 @@ function NearbyPanel({ position, places, setPlaces }) {
   }
   // search automatically once a position is known
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (position && !meta && !busy) search(); }, [Boolean(position)]);
+  useEffect(() => { if (!busy) search(); }, [Boolean(position)]);
   return (
     <div>
       <div className="row">
@@ -46,9 +47,9 @@ function NearbyPanel({ position, places, setPlaces }) {
           <option value={5000}>5 km</option>
           <option value={10000}>10 km</option>
         </select>
-        <button className="btn btn-primary btn-small" onClick={search} disabled={busy || !position}>{busy ? 'Searching…' : 'Search'}</button>
+        <button className="btn btn-primary btn-small" onClick={search} disabled={busy}>{busy ? 'Searching…' : 'Search'}</button>
       </div>
-      {!position && <p className="muted small">Share your location to search nearby.</p>}
+      {!position && <p className="notice notice-info small">Showing places around the city centre. Start sharing your location to see places near you.</p>}
       <ErrorBox error={error} onRetry={search} />
       {meta && (
         <>

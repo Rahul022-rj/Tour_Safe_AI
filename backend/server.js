@@ -44,13 +44,7 @@ connectDB()
       chainProofs.startWorker();
       (async () => {
         // Hosting without a shell (e.g. Render free plan): create zones / operator automatically if missing
-        if (config.autoSetup) {
-          try {
-            await require('./services/setup').runSetup();
-          } catch (err) {
-            console.error(`[setup] ${err.message}`);
-          }
-        }
+        if (config.autoSetup) await require('./services/setup').runSetupOnStart();
         if (config.embeddedChain) await embeddedChain.start();
         // The API also works without the chain (proofs are queued and retried), so just report it
         getChainStatus()

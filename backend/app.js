@@ -56,7 +56,8 @@ function createApp() {
     } catch (err) {
       chain = { ok: false, error: err.message };
     }
-    res.status(db ? 200 : 503).json({ ok: db, database: db ? 'connected' : 'disconnected', blockchain: chain, time: new Date() });
+    const setup = config.autoSetup ? require('./services/setup').getSetupStatus() : undefined;
+    res.status(db ? 200 : 503).json({ ok: db, database: db ? 'connected' : 'disconnected', blockchain: chain, setup, time: new Date() });
   });
   app.use('/api/auth', require('./routes/auth'));
   app.use('/api/tourists', require('./routes/tourist'));

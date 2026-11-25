@@ -30,6 +30,9 @@ services:
         sync: false
       - key: SETUP_ADMIN_NAME
         value: Control Room
+      # Recovery: set to "true" to reset the operator password to SETUP_ADMIN_PASSWORD on the next start, then back to "false"
+      - key: SETUP_ADMIN_RESET
+        value: "false"
       # Create zones / sample stations / operator automatically (only what is missing)
       - key: AUTO_SETUP
         value: "true"

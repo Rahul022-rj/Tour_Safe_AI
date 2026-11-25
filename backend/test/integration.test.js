@@ -603,6 +603,42 @@ describe('TourSafe API', { concurrency: false }, () => {
     });
   });
 
+  // ---------------- Hosting setup (operator account) ----------------
+  it('setup: trims pasted credentials, refuses a tourist email, and SETUP_ADMIN_RESET recovers the operator login', async () => {
+    const { runSetup } = require('../services/setup');
+    const quiet = { log: () => {}, warn: () => {} };
+    const saved = { ...process.env };
+    try {
+      // A tourist email cannot become the operator
+      const t = await h.registerTourist();
+      Object.assign(process.env, { SETUP_ADMIN_EMAIL: t.user.email, SETUP_ADMIN_PASSWORD: 'Ops!Pass2026', SETUP_ADMIN_RESET: 'true' });
+      await assert.rejects(runSetup(quiet), /registered as a tourist/);
+
+      // Pasted values with spaces/newlines still give a working login
+      Object.assign(process.env, { SETUP_ADMIN_EMAIL: '  Ops.Recover@Example.com \n', SETUP_ADMIN_PASSWORD: 'Ops!Pass2026 \n' });
+      await runSetup(quiet);
+      const ok = await h.api().post('/api/auth/login').send({ email: 'ops.recover@example.com', password: 'Ops!Pass2026' });
+      assert.equal(ok.status, 200);
+      assert.equal(ok.body.user.role, 'admin');
+
+      // Forgotten password: change SETUP_ADMIN_PASSWORD with the reset flag on -> new password works, old token revoked
+      process.env.SETUP_ADMIN_PASSWORD = 'New!OpsPass2026';
+      await runSetup(quiet);
+      assert.equal((await h.api().post('/api/auth/login').send({ email: 'ops.recover@example.com', password: 'Ops!Pass2026' })).status, 401);
+      assert.equal((await h.api().post('/api/auth/login').send({ email: 'ops.recover@example.com', password: 'New!OpsPass2026' })).status, 200);
+      assert.equal((await h.api().get('/api/auth/me').set('Authorization', `Bearer ${ok.body.token}`)).status, 401);
+
+      // Weak password is reported clearly
+      process.env.SETUP_ADMIN_PASSWORD = 'weak';
+      await assert.rejects(runSetup(quiet), /SETUP_ADMIN_PASSWORD needs/);
+    } finally {
+      for (const k of ['SETUP_ADMIN_EMAIL', 'SETUP_ADMIN_PASSWORD', 'SETUP_ADMIN_RESET']) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
   // ---------------- TEST 8 (last: stops the chain) ----------------
   it('TEST 8: with the blockchain stopped, SOS still creates the incident and alerts operators', async () => {
     await h.stopChain();

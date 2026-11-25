@@ -477,6 +477,7 @@ Copy `backend/.env.example` to `backend/.env`. **Never upload `.env` to GitHub**
 | `EXTERNAL_USER_AGENT` | TourSafe-AI/1.0 | Identifies the app to those services |
 | `DISABLE_EXTERNAL_APIS` | false | Turn off all external map services |
 | `SETUP_ADMIN_EMAIL`, `SETUP_ADMIN_PASSWORD`, `SETUP_ADMIN_NAME` | | Alternative to the `npm run setup` arguments |
+| `SETUP_ADMIN_RESET` | false | `true` = on the next start, give `SETUP_ADMIN_EMAIL` the password `SETUP_ADMIN_PASSWORD` (creates the operator if missing). Turn it off again afterwards |
 | `AUTO_SETUP` | false | Run the first-time setup on every start (hosting without a shell) |
 | `EMBEDDED_CHAIN`, `EMBEDDED_CHAIN_PORT` | false, 8545 | Start a demo blockchain inside the server and rebuild it from the database on every start |
 
@@ -646,7 +647,10 @@ Every `git push` to the `main` branch redeploys automatically.
 |---|---|
 | Build fails | Open the service → *Logs*; the build log shows the failing step |
 | `Could not connect to MongoDB` in the logs | Check `MONGODB_URI` (password inserted, special characters encoded) and Atlas *Network Access* `0.0.0.0/0` |
-| `No operator account yet` in the logs | Set `SETUP_ADMIN_EMAIL` and `SETUP_ADMIN_PASSWORD` (strong) in *Environment* |
+| Operator (admin) login says "Invalid email or password" | Open `https://<your-app>.onrender.com/api/health` and look at `"setup"`: it says whether an operator exists or why it could not be created. To set a new operator password: Render → *Environment* → set `SETUP_ADMIN_PASSWORD` to the new password and add `SETUP_ADMIN_RESET` = `true` → *Save* (the app restarts) → log in → then set `SETUP_ADMIN_RESET` back to `false`. |
+| `"setup"` says *registered as a tourist* | You registered that email as a tourist first. Use a different `SETUP_ADMIN_EMAIL` for the operator |
+| `"setup"` says *SETUP_ADMIN_PASSWORD needs …* | The password is too weak: 8+ characters with upper case, lower case, a digit and a symbol |
+| Nearby help shows only DEMO records | The public OpenStreetMap servers were unreachable; the app now falls back to Nominatim automatically. Try *Search* again after a minute |
 | Blockchain shows offline right after a wake-up | Wait ~30 seconds: the chain is being rebuilt; IDs show BLOCKCHAIN UNAVAILABLE meanwhile, never a false VALID |
 
 ---

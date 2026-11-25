@@ -33,6 +33,10 @@ const STATIONS = [
   { name: 'Nampally Area Hospital', type: 'hospital', phone: '108', address: 'Nampally, Hyderabad', location: point(78.466, 17.393) },
 ];
 
+// Result of the last setup run, shown (without secrets) in /api/health
+const lastResult = { ran: false, ok: null, message: null, at: null };
+const getSetupStatus = () => ({ ...lastResult });
+
 async function runSetup({ reset = false, adminEmail, adminPassword, adminName, log = console.log, warn = console.warn } = {}) {
   const models = MODEL_NAMES.map((n) => require(`../models/${n}`));
   if (reset) {
@@ -53,22 +57,66 @@ async function runSetup({ reset = false, adminEmail, adminPassword, adminName, l
     log(`[setup] ${STATIONS.length} sample police/hospital records created (shown as DEMO; live data comes from OpenStreetMap)`);
   } else log('[setup] Sample stations already exist: unchanged');
 
-  const existing = await User.findOne({ role: 'admin' }).lean();
-  if (existing) {
-    log(`[setup] Operator account already exists (${existing.email}): unchanged`);
-  } else {
-    const email = String(adminEmail || process.env.SETUP_ADMIN_EMAIL || (config.isProduction ? '' : 'admin@demo.com')).toLowerCase();
-    const password = adminPassword || process.env.SETUP_ADMIN_PASSWORD || (config.isProduction ? '' : 'Admin@123');
-    const name = adminName || process.env.SETUP_ADMIN_NAME || 'Control Room Operator';
-    if (!isEmail(email)) throw new Error('No operator account yet: set SETUP_ADMIN_EMAIL (or --admin-email)');
+  // Values pasted into hosting dashboards often carry a trailing space or newline: trim them
+  const email = String(adminEmail || process.env.SETUP_ADMIN_EMAIL || (config.isProduction ? '' : 'admin@demo.com')).trim().toLowerCase();
+  const password = String(adminPassword || process.env.SETUP_ADMIN_PASSWORD || (config.isProduction ? '' : 'Admin@123')).trim();
+  const name = String(adminName || process.env.SETUP_ADMIN_NAME || 'Control Room Operator').trim();
+  const resetRequested = /^(1|true|yes)$/i.test(String(process.env.SETUP_ADMIN_RESET || '').trim());
+
+  const validateCredentials = () => {
+    if (!isEmail(email)) throw new Error('No valid SETUP_ADMIN_EMAIL (or --admin-email) given');
     const problems = passwordProblems(password);
     if (problems.length) throw new Error(`SETUP_ADMIN_PASSWORD needs ${problems.join(', ')}`);
-    await User.create({ name, email, role: 'admin', passwordHash: await bcrypt.hash(password, config.bcryptRounds), passwordChangedAt: new Date() });
-    log(`[setup] Operator account created: ${email}`);
-    if (email === 'admin@demo.com') warn('[setup] WARNING: this is the public development login. Change its password in Settings.');
+  };
+
+  if (resetRequested) {
+    // Recovery: make SETUP_ADMIN_EMAIL an operator login with SETUP_ADMIN_PASSWORD (turn the flag off afterwards)
+    validateCredentials();
+    const user = await User.findOne({ email });
+    if (user && user.role !== 'admin') throw new Error(`${email} is registered as a tourist; choose a different SETUP_ADMIN_EMAIL`);
+    if (user) {
+      user.passwordHash = await bcrypt.hash(password, config.bcryptRounds);
+      user.passwordChangedAt = new Date();
+      user.status = 'active';
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+      await user.save();
+      log(`[setup] Operator password reset for ${email} (SETUP_ADMIN_RESET). Set SETUP_ADMIN_RESET=false now.`);
+    } else {
+      await User.create({ name, email, role: 'admin', passwordHash: await bcrypt.hash(password, config.bcryptRounds), passwordChangedAt: new Date() });
+      log(`[setup] Operator account created: ${email} (SETUP_ADMIN_RESET)`);
+    }
+  } else {
+    const existing = await User.findOne({ role: 'admin' }).lean();
+    if (existing) {
+      log(`[setup] Operator account already exists (${existing.email}): unchanged`);
+    } else {
+      validateCredentials();
+      if (await User.exists({ email })) throw new Error(`${email} is already registered as a tourist; choose a different SETUP_ADMIN_EMAIL`);
+      await User.create({ name, email, role: 'admin', passwordHash: await bcrypt.hash(password, config.bcryptRounds), passwordChangedAt: new Date() });
+      log(`[setup] Operator account created: ${email}`);
+      if (email === 'admin@demo.com') warn('[setup] WARNING: this is the public development login. Change its password in Settings.');
+    }
   }
   const tourists = await User.countDocuments({ role: 'tourist' });
   log(`[setup] Done. ${tourists} registered tourist(s).`);
 }
 
-module.exports = { runSetup };
+// Wrapper used on server start: records the outcome instead of throwing
+async function runSetupOnStart() {
+  lastResult.ran = true;
+  lastResult.at = new Date();
+  try {
+    await runSetup();
+    const User = require('../models/User');
+    const operators = await User.countDocuments({ role: 'admin', status: 'active' });
+    lastResult.ok = operators > 0;
+    lastResult.message = operators > 0 ? `${operators} operator account(s)` : 'No operator account exists';
+  } catch (err) {
+    lastResult.ok = false;
+    lastResult.message = err.message; // never contains passwords or connection strings
+    console.error(`[setup] ${err.message}`);
+  }
+  return getSetupStatus();
+}
+
+module.exports = { runSetup, runSetupOnStart, getSetupStatus };

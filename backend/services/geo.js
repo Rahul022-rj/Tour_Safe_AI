@@ -141,6 +141,46 @@ const withDistance = (lat, lng) => (s) => {
   };
 };
 
+// Overpass public servers often refuse or time out requests from cloud hosting; when that happens they are skipped
+// for a while and Nominatim's search (same OpenStreetMap data, limited to named places) is used instead.
+const OVERPASS_COOLDOWN_MS = 15 * 60e3;
+let overpassDownUntil = 0;
+
+// Searches "police" / "hospital" inside a box around the point with Nominatim (max 1 request per second)
+async function refreshFromNominatim(types, lat, lng, radius) {
+  const dLat = radius / 111320;
+  const dLng = radius / (111320 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)));
+  const viewbox = [lng - dLng, lat + dLat, lng + dLng, lat - dLat].map((n) => n.toFixed(5)).join(',');
+  let total = 0;
+  for (const type of types) {
+    const rows = await nominatim(`/search?format=jsonv2&extratags=1&addressdetails=1&limit=40&bounded=1&viewbox=${viewbox}&q=${encodeURIComponent(type)}`);
+    const docs = rows
+      .filter((r) => r.category === 'amenity' && r.type === type && r.osm_type && r.osm_id)
+      .map((r) => {
+        const t = r.extratags || {};
+        const a = r.address || {};
+        const address = [a.house_number, a.road, a.suburb || a.neighbourhood, a.city || a.town || a.village].filter(Boolean).join(', ');
+        return {
+          name: r.name || (type === 'police' ? 'Police (unnamed)' : 'Hospital (unnamed)'),
+          type,
+          phone: t.phone || t['contact:phone'] || undefined,
+          address: address || undefined,
+          location: { type: 'Point', coordinates: [Number(r.lon), Number(r.lat)] },
+          source: 'openstreetmap',
+          sourceId: `${r.osm_type}/${r.osm_id}`, // same format as Overpass, so records are not duplicated
+          verified: false,
+          fetchedAt: new Date(),
+        };
+      })
+      .filter((d) => Number.isFinite(d.location.coordinates[0]) && Number.isFinite(d.location.coordinates[1]));
+    if (docs.length) {
+      await Station.bulkWrite(docs.map((d) => ({ updateOne: { filter: { source: 'openstreetmap', sourceId: d.sourceId }, update: { $set: d }, upsert: true } })));
+    }
+    total += docs.length;
+  }
+  return { fetched: total, provider: new URL(config.nominatimUrl).host };
+}
+
 // Nearby facilities. Live OpenStreetMap data when reachable; otherwise previously cached OSM data and demo records,
 // with a note explaining exactly what the user is looking at.
 async function nearbyPlaces({ lat, lng, type, radius = 5000, limit = 15 }) {
@@ -148,12 +188,25 @@ async function nearbyPlaces({ lat, lng, type, radius = 5000, limit = 15 }) {
   const notes = [];
   let live = false;
   const key = `places:${types.join(',')}:${lat.toFixed(2)},${lng.toFixed(2)}:${radius}`;
+  let provider = null;
   const failed = recentFailures.get(key);
   if (failed && failed.until > Date.now()) {
     notes.push(`Live OpenStreetMap lookup unavailable (${failed.message}); showing cached and demo records. Retrying in a few minutes.`);
   } else {
     try {
-      await cached(key, 6 * 3600e3, () => refreshFromOverpass(types, lat, lng, radius));
+      // Provider chain: Overpass (complete data) unless it failed recently, then Nominatim (works from cloud hosts)
+      const result = await cached(key, 6 * 3600e3, async () => {
+        if (overpassDownUntil < Date.now()) {
+          try {
+            return await refreshFromOverpass(types, lat, lng, radius);
+          } catch (err) {
+            overpassDownUntil = Date.now() + OVERPASS_COOLDOWN_MS; // skip it for a while, do not make every user wait
+            console.warn(`[places] Overpass unavailable (${err.message}); using Nominatim`);
+          }
+        }
+        return refreshFromNominatim(types, lat, lng, radius);
+      });
+      provider = result.provider;
       live = true;
       recentFailures.delete(key);
     } catch (err) {
@@ -162,6 +215,7 @@ async function nearbyPlaces({ lat, lng, type, radius = 5000, limit = 15 }) {
       notes.push(`Live OpenStreetMap lookup failed (${err.message}); showing cached and demo records.`);
     }
   }
+  if (provider) notes.push(`Live data from OpenStreetMap (${provider}).`);
   const docs = await Station.find({
     type: { $in: types },
     location: { $nearSphere: { $geometry: { type: 'Point', coordinates: [lng, lat] }, $maxDistance: radius } },
