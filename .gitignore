@@ -7,3 +7,12 @@ dist/
 blockchain/artifacts/
 blockchain/cache/
 blockchain/deployment.json
+
+# Local / generated
+.env.*
+!.env.example
+coverage/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

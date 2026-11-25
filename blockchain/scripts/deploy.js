@@ -16,6 +16,7 @@ async function main() {
   const deployment = {
     address,
     chainId: Number(chainId),
+    network: hre.network.name,
     owner: deployer.address,
     deployedAt: new Date().toISOString(),
     abi,
@@ -25,6 +26,11 @@ async function main() {
 
   console.log(`TouristRegistry deployed to ${address} (chain ${chainId}, owner ${deployer.address})`);
   console.log(`Saved to ${file}`);
+  if (Number(chainId) === 31337) {
+    console.log('NOTE: the local Hardhat chain is in memory only. Restarting the node erases it (then redeploy + npm run chain:sync).');
+  } else {
+    console.log(`For the backend set: CHAIN_ID=${chainId} CONTRACT_ADDRESS=${address} BLOCKCHAIN_RPC_URL=<rpc> PRIVATE_KEY=<owner key>`);
+  }
   console.log('Next: npm run seed (fresh demo data) or npm run chain:sync (keep data, re-register it on chain)');
 }
 

@@ -1,15 +1,35 @@
-// Talks to the TouristRegistry contract on the local Hardhat node using ethers v6.
-// Address + ABI come from blockchain/deployment.json (written by the deploy script).
+// Talks to the TouristRegistry contract using ethers v6.
+//  - RPC URL, chain id, contract address and signing key come from config (environment variables).
+//  - If CONTRACT_ADDRESS is empty, the address is read from blockchain/deployment.json (written by the deploy script)
+//    and re-read whenever that file changes, so a redeploy needs no backend restart.
+//  - Signing: PRIVATE_KEY if set; otherwise, ONLY on the local Hardhat chain (31337), the node's unlocked account #0.
+//  - Every write is idempotent (checks the on-chain state first) so the retry worker can safely repeat it,
+//    and writes are serialized so two concurrent transactions never fight over the same nonce.
 const fs = require('fs');
 const { ethers } = require('ethers');
 const config = require('../config');
 
-let cached = { mtimeMs: 0, provider: null, deployment: null };
+// Human-readable ABI of contracts/TouristRegistry.sol (kept here so the backend does not depend on build artifacts)
+const ABI = [
+  'function owner() view returns (address)',
+  'function registered(bytes32) view returns (bool)',
+  'function revoked(bytes32) view returns (bool)',
+  'function incidentLoggedAt(bytes32) view returns (uint256)',
+  'function verifyID(bytes32 idHash) view returns (bool)',
+  'function registerID(bytes32 idHash)',
+  'function revokeID(bytes32 idHash)',
+  'function logIncident(bytes32 incidentHash)',
+  'event IDRegistered(bytes32 indexed idHash, uint256 timestamp)',
+  'event IDRevoked(bytes32 indexed idHash, uint256 timestamp)',
+  'event IncidentLogged(bytes32 indexed incidentHash, uint256 timestamp)',
+];
+
+let cached = { key: '', provider: null, address: null, signer: null };
 
 // Error with an HTTP status the central error handler can use
-const chainError = (status, message) => Object.assign(new Error(message), { status });
+const chainError = (status, message, code = 'CHAIN_ERROR') => Object.assign(new Error(message), { status, code, expose: true });
 
-// The contract's require() message. Depending on how Hardhat reports the revert, ethers puts it in
+// The contract's require() message. Depending on how the node reports the revert, ethers puts it in
 // err.reason or only inside the nested node error text ("reverted with reason string '...'").
 function revertReason(err) {
   if (err.reason) return err.reason;
@@ -18,73 +38,100 @@ function revertReason(err) {
   return match ? match[1] : null;
 }
 
-// Turn low-level ethers errors into messages a user (or viva examiner) understands
+// Turn low-level ethers errors into messages a user understands
 function friendly(err) {
   if (err.status) return err; // already friendly
-  if (err.code === 'ECONNREFUSED' || /ECONNREFUSED|fetch failed|timeout/i.test(err.message)) {
-    return chainError(503, `Blockchain node not reachable at ${config.chainRpcUrl}. Start it with: npm run chain`);
+  if (err.code === 'ECONNREFUSED' || err.code === 'TIMEOUT' || /ECONNREFUSED|fetch failed|timeout|ENOTFOUND|socket hang up/i.test(err.message)) {
+    return chainError(503, `Blockchain node not reachable at ${config.chainRpcUrl}. Start it with: npm run chain`, 'CHAIN_UNAVAILABLE');
   }
-  if (err.code === 'BAD_DATA') {
-    return chainError(503, 'No contract at the saved address (the Hardhat node was probably restarted). Run: npm run chain:deploy, then npm run seed or npm run chain:sync');
+  if (err.code === 'BAD_DATA' || err.code === 'CALL_EXCEPTION' && !revertReason(err)) {
+    return chainError(503, 'No contract at the configured address (a local Hardhat node was probably restarted). Run: npm run chain:deploy, then npm run chain:sync', 'CHAIN_NO_CONTRACT');
   }
   const reason = revertReason(err);
-  if (reason) {
-    return chainError(400, `Blockchain rejected the request: ${reason}`); // a require() in the contract failed
-  }
+  if (reason) return chainError(400, `Blockchain rejected the request: ${reason}`, 'CHAIN_REVERT');
   return chainError(502, `Blockchain error: ${err.shortMessage || err.message}`);
 }
 
-// Loads deployment.json again whenever it changes, so a redeploy needs no backend restart
-function load() {
+function contractAddress() {
+  if (config.contractAddress) return { address: config.contractAddress, key: `env:${config.contractAddress}` };
   let stat;
   try {
     stat = fs.statSync(config.deploymentFile);
   } catch {
-    throw chainError(503, 'Contract not deployed yet. Run: npm run chain:deploy');
+    throw chainError(503, 'Contract not deployed yet. Run: npm run chain:deploy (or set CONTRACT_ADDRESS)', 'CHAIN_NOT_DEPLOYED');
   }
-  if (stat.mtimeMs !== cached.mtimeMs) {
+  const deployment = JSON.parse(fs.readFileSync(config.deploymentFile, 'utf8'));
+  if (deployment.chainId && Number(deployment.chainId) !== config.chainId) {
+    throw chainError(503, `deployment.json is for chain ${deployment.chainId} but CHAIN_ID is ${config.chainId}`, 'CHAIN_MISMATCH');
+  }
+  return { address: deployment.address, key: `file:${stat.mtimeMs}:${deployment.address}` };
+}
+
+function load() {
+  const { address, key } = contractAddress();
+  const fullKey = `${key}|${config.chainRpcUrl}|${config.chainId}`;
+  if (fullKey !== cached.key) {
     if (cached.provider) cached.provider.destroy();
-    const deployment = JSON.parse(fs.readFileSync(config.deploymentFile, 'utf8'));
     const request = new ethers.FetchRequest(config.chainRpcUrl);
     request.timeout = 5000; // fail fast instead of ethers' 5 minute default
-    const network = ethers.Network.from(deployment.chainId);
+    const network = ethers.Network.from(config.chainId);
     // staticNetwork: skip ethers' network auto-detection, which retries forever while the node is down
     const provider = new ethers.JsonRpcProvider(request, network, { staticNetwork: network });
-    cached = { mtimeMs: stat.mtimeMs, provider, deployment };
+    cached = { key: fullKey, provider, address, signer: null };
   }
   return cached;
 }
 
-// Read-only contract (for view functions)
-function reader() {
-  const { provider, deployment } = load();
-  return new ethers.Contract(deployment.address, deployment.abi, provider);
-}
-
-// Contract connected to account #0 (the owner) for transactions.
-// Hardhat's node holds that account's key, so it signs and picks the nonce for us.
-// (A real deployment would use new ethers.Wallet(PRIVATE_KEY, provider) instead.)
-async function writer() {
-  const { provider, deployment } = load();
-  const signer = await provider.getSigner(0);
-  return new ethers.Contract(deployment.address, deployment.abi, signer);
-}
-
-// Sends a transaction, waits until it is mined, returns its hash
-async function send(method, hash) {
-  try {
-    const contract = await writer();
-    const tx = await contract[method](hash);
-    const receipt = await tx.wait();
-    return receipt.hash;
-  } catch (err) {
-    throw friendly(err);
+async function getSigner() {
+  const c = load();
+  if (c.signer) return c.signer;
+  if (config.privateKey) {
+    // NonceManager keeps track of the nonce locally so back-to-back transactions do not collide
+    c.signer = new ethers.NonceManager(new ethers.Wallet(config.privateKey, c.provider));
+  } else if (config.chainId === 31337) {
+    // Local development only: the Hardhat node holds account #0's key and signs for us
+    c.signer = await c.provider.getSigner(0);
+  } else {
+    throw chainError(503, 'PRIVATE_KEY is not configured for this blockchain network', 'CHAIN_NO_SIGNER');
   }
+  return c.signer;
 }
 
-const registerId = (idHash) => send('registerID', idHash);
-const revokeId = (idHash) => send('revokeID', idHash);
-const logIncidentHash = (incidentHash) => send('logIncident', incidentHash);
+const reader = () => {
+  const { provider, address } = load();
+  return new ethers.Contract(address, ABI, provider);
+};
+
+// Serializes writes: each transaction waits for the previous one to finish
+let queue = Promise.resolve();
+function serialize(fn) {
+  const run = queue.then(fn, fn);
+  queue = run.catch(() => {});
+  return run;
+}
+
+// Sends a transaction, waits for CHAIN_CONFIRMATIONS confirmations, returns { txHash, blockNumber, alreadyDone }
+// alreadyDoneCheck() lets retries succeed when an earlier attempt was in fact mined.
+function send(method, hash, alreadyDoneCheck) {
+  return serialize(async () => {
+    try {
+      if (alreadyDoneCheck && (await alreadyDoneCheck())) return { txHash: null, blockNumber: null, alreadyDone: true };
+      const signer = await getSigner();
+      const contract = new ethers.Contract(load().address, ABI, signer);
+      const tx = await contract[method](hash);
+      const receipt = await tx.wait(config.chainConfirmations, config.chainTxTimeoutMs);
+      if (!receipt || receipt.status !== 1) throw chainError(502, `Transaction ${tx.hash} failed on chain`, 'CHAIN_TX_FAILED');
+      return { txHash: receipt.hash, blockNumber: receipt.blockNumber, alreadyDone: false };
+    } catch (err) {
+      if (err.code === 'NONCE_EXPIRED' || /nonce/i.test(err.message || '')) cached.signer = null; // resync nonce next time
+      throw friendly(err);
+    }
+  });
+}
+
+const registerId = (idHash) => send('registerID', idHash, () => reader().registered(idHash));
+const revokeId = (idHash) => send('revokeID', idHash, () => reader().revoked(idHash));
+const logIncidentHash = (incidentHash) => send('logIncident', incidentHash, async () => Number(await reader().incidentLoggedAt(incidentHash)) > 0);
 
 // { registered, revoked, valid } where valid = the contract's verifyID()
 async function getIdStatus(idHash) {
@@ -106,22 +153,38 @@ async function getIncidentLoggedAt(incidentHash) {
   }
 }
 
-// For the status line on the Verify page and the server start-up log
+// Health check: node reachable, right chain, contract code present
 async function getChainStatus() {
   try {
-    const { provider, deployment } = load();
-    const [blockNumber, code] = await Promise.all([provider.getBlockNumber(), provider.getCode(deployment.address)]);
+    const { provider, address } = load();
+    const [blockNumber, code, net] = await Promise.all([
+      provider.getBlockNumber(),
+      provider.getCode(address),
+      provider.send('eth_chainId', []),
+    ]);
+    const actualChainId = Number(net);
+    if (actualChainId !== config.chainId) {
+      throw chainError(503, `RPC node is chain ${actualChainId}, expected CHAIN_ID ${config.chainId}`, 'CHAIN_MISMATCH');
+    }
     if (code === '0x') throw Object.assign(new Error('no contract'), { code: 'BAD_DATA' });
-    return { ok: true, address: deployment.address, chainId: deployment.chainId, blockNumber };
+    return {
+      ok: true,
+      address,
+      chainId: actualChainId,
+      blockNumber,
+      rpcUrl: config.chainRpcUrl.replace(/\/\/[^@/]*@/, '//***@'), // hide credentials embedded in RPC URLs
+      signer: config.privateKey ? 'wallet (PRIVATE_KEY)' : 'hardhat unlocked account #0 (dev only)',
+      persistent: config.chainId !== 31337,
+    };
   } catch (err) {
     throw friendly(err);
   }
 }
 
-// Lets scripts (seed, sync) exit cleanly
+// Lets scripts (seed, sync) and tests exit cleanly
 function closeChain() {
   if (cached.provider) cached.provider.destroy();
-  cached = { mtimeMs: 0, provider: null, deployment: null };
+  cached = { key: '', provider: null, address: null, signer: null };
 }
 
-module.exports = { registerId, revokeId, logIncidentHash, getIdStatus, getIncidentLoggedAt, getChainStatus, closeChain };
+module.exports = { ABI, registerId, revokeId, logIncidentHash, getIdStatus, getIncidentLoggedAt, getChainStatus, closeChain };
