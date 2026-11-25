@@ -28,6 +28,9 @@ function createApp() {
         },
       },
       crossOriginEmbedderPolicy: false,
+      // OpenStreetMap's tile servers reject requests without a Referer (tile usage policy). Send only the
+      // site's origin to other sites, never full page URLs (Helmet's default 'no-referrer' breaks the map).
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     })
   );
   app.use(

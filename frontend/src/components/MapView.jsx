@@ -15,10 +15,10 @@ export default function MapView({ center = HYDERABAD, zoom = 13, height = 520, c
       <MapContainer center={center} zoom={zoom} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
         <LayersControl position="topright">
           <LayersControl.BaseLayer checked name="Street map">
-            <TileLayer attribution={OSM_ATTRIBUTION} url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} />
+            <TileLayer attribution={OSM_ATTRIBUTION} url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} referrerPolicy="strict-origin-when-cross-origin" />
           </LayersControl.BaseLayer>
           <LayersControl.BaseLayer name="Humanitarian">
-            <TileLayer attribution={`${OSM_ATTRIBUTION}, tiles by HOT`} url="https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png" maxZoom={19} />
+            <TileLayer attribution={`${OSM_ATTRIBUTION}, tiles by HOT`} url="https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png" maxZoom={19} referrerPolicy="strict-origin-when-cross-origin" />
           </LayersControl.BaseLayer>
           {overlays.map((o) => (
             <LayersControl.Overlay key={o.name} name={o.name} checked={o.checked !== false}>
